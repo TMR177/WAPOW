@@ -1,0 +1,13 @@
+[Unit]
+Description=Bring up can0 at 500 kbps (WAPOW CAN bus)
+BindsTo=sys-subsystem-net-devices-can0.device
+After=sys-subsystem-net-devices-can0.device
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/ip link set can0 up type can bitrate 500000
+ExecStop=/usr/bin/ip link set can0 down
+
+[Install]
+WantedBy=sys-subsystem-net-devices-can0.device
