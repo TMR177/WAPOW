@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<!--
+  WAPOW — boot splash (browser version)
+  Copyright (C) 2026 Tyrone W Milner (WAPOW Labs) — https://wapowlabs.com
+
+  This program is free software: you can redistribute it and/or modify it
+  under the terms of the GNU General Public License as published by the Free
+  Software Foundation, either version 3 of the License, or (at your option)
+  any later version. It is distributed WITHOUT ANY WARRANTY; see the GNU
+  General Public License (LICENSE in this repository) for details.
+
+  The code is free; the name is not. "WAPOW" is a trademark of Tyrone W
+  Milner d/b/a WAPOW Labs —
+  see TRADEMARK_POLICY.md. Contributions are accepted under CONTRIBUTING.md.
+
+  WHAT THIS IS
+  A canvas re-creation of the 6-second WAPOW boot reveal: the first 6 s of
+  wapow_boot_splash.mp4, which is exactly what the dash plays at boot
+  (SPLASH_SECONDS = 6.0 in wapow_dash.py). White pixel-block "WAPOW" on
+  black: scanline rails sweep in, the letters type in one by one (dots ->
+  blocks -> venetian bars -> solid), the rails crumble away, and the clean
+  wordmark holds. Nothing here is a video or an image — every block is drawn
+  from the little letter maps further down, so the file is fully
+  self-contained (no fonts, no CDN, no media files, no network at all).
+
+  HOW TO USE IT
+  Open the file in any browser. It plays once and then HOLDS the clean
+  wordmark. Click / tap anywhere, or press R, to replay.
+  Add ?t=2.5 to the address to FREEZE the animation at 2.5 s — that is how
+  the frames were checked against the real video (headless screenshots).
+  If the computer asks for reduced motion (an OS accessibility setting), it
+  skips the animation and simply shows the finished wordmark.
+
+  Timings and positions below were measured off the real mp4 frame by
+  frame, so the numbers are "video pixels" (the mp4 is 1280x720) and
+  seconds since the splash started.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WAPOW Boot Splash</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  /* The canvas covers the whole window; the 16:9 picture is centred inside it
+     and everything around it stays black (letterboxing). */
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block;
+           cursor: pointer; touch-action: manipulation; }
+</style>
+</head>
+<body>
+<canvas id="splash" role="img" aria-label="WAPOW"></canvas>
+<script>
+"use strict";
+
+/* ===================================================================== */
+/* 1. THE STAGE — every number in this file is in "video pixels"          */
+/* ===================================================================== */
+// The source mp4 is 1280x720. Laying everything out on that same grid means
+// a position like (161, 242) is the same spot you'd find in the real video.
+// At draw time the whole stage is scaled up or down to fit the window.
+const STAGE_W = 1280, STAGE_H = 720;
+const VIDEO_FPS = 24;     // the mp4 runs at 24 fps; time moves in the same
+                          // 1/24 s steps, so the blocks "tick" like the video
+const SETTLED_T = 4.8;    // by here every glitch has cleared — clean mark only
+const END_T = 6.0;        // the dash cuts to the gauges here (SPLASH_SECONDS)
+
+/* ===================================================================== */
+/* 2. THE LETTERS — tiny pixel maps, one '#' per block                    */
+/* ===================================================================== */
+// Each glyph "pixel" is a tall block, 7.5 wide by 12.3 tall. That is the
+// stair-step size you can see on the diagonals of the real wordmark
+// (one step across for every step down). 19 rows = the 234 px cap height.
+const CELL_W = 7.5;
+const CELL_H = 12.3;
+const TEXT_TOP = 242.5;   // top edge of the letters (video pixels)
+
+const GLYPHS = {
+  W: [
+    "######..............######",
+    "######..............######",
+    "######..............######",
+    "######..............######",
+    "######..............######",
+    "######..............######",
+    "######..............######",
+    "######.....####.....######",
+    "######....######....######",
+    "######...########...######",
+    "######..##########..######",
+    "######.############.######",
+    "##########################",
+    "############..############",
+    ".##########....##########.",
+    ".#########......#########.",
+    ".########........########.",
+    ".#######..........#######.",
+    ".######............######.",
+  ],
+  A: [
+    "........#######........",
+    "........#######........",
+    ".......#########.......",
+    "......###########......",
+    ".....#############.....",
+    "....###############....",
+    "...########.########...",
+    "..########...########..",
+    "..#######.....#######..",
+    "..######.......######..",
+    "..###################..",
+    "..###################..",
+    ".#####################.",
+    ".#####################.",
+    ".######.........######.",
+    ".######.........######.",
+    ".######.........######.",
+    "######...........######",
+    "######...........######",
+  ],
+  P: [
+    "###############......",
+    "##################...",
+    "###################..",
+    "######.......#######.",
+    "######........#######",
+    "######.........######",
+    "######.........######",
+    "######........#######",
+    "######.......#######.",
+    "###################..",
+    "##################...",
+    "###############......",
+    "######...............",
+    "######...............",
+    "######...............",
+    "######...............",
+    "######...............",
+    "######...............",
+    "######...............",
+  ],
+  O: [
+    "......#########......",
+    "....#############....",
+    "..#################..",
+    ".#######.....#######.",
+    "#######.......#######",
+    "######.........######",
+    "######.........######",
+    "######.........######",
+    "######.........######",
+    "######.........######",
+    "######.........######",
+    "######.........######",
+    "######.........######",
+    "######.........######",
+    "#######.......#######",
+    ".#######.....#######.",
+    "..#################..",
+    "....#############....",
+    "......#########......",
+  ],
+};
+
+// The word, left to right: which glyph, where its left edge sits, the
+// moment (seconds) it starts typing in, and how quickly it fills (1 = the
+// first W's pace). The letters wake ~0.25 s apart and each one types in a
+// little faster than the last — the reveal picks up speed as it goes.
+const WORD = [
+  { glyph: "W", x: 161, wake: 1.86, speed: 1.00 },
+  { glyph: "A", x: 381, wake: 2.11, speed: 1.15 },
+  { glyph: "P", x: 581, wake: 2.48, speed: 1.30 },
+  { glyph: "O", x: 761, wake: 2.66, speed: 1.30 },
+  { glyph: "W", x: 948, wake: 2.88, speed: 1.12 },
+];
+
+// How a letter types in. Think of a dot-matrix sign warming up: each letter
+// is cut into "blobs" — one per stroke, per band of 3 rows. Every blob starts
+// as a faint dot in the middle of its stroke and swells into a rectangle.
+// Width fills faster than height, so for a moment the letter is a stack of
+// bars with dark slits between them (the "venetian blind" look), then the
+// slits close and it is solid. Anything that spills outside the letter shape
+// is trimmed off, so the end result is exactly the pixel map above.
+const BAND_ROWS = 3;          // rows per band of blobs (7 bands = 19 rows)
+const BLOB_MAX_COLS = 7;      // a wide stroke is split into blobs this wide
+const GROW_X = 0.80;          // seconds for a blob to reach full width...
+const GROW_Y = 1.00;          // ...and full height (starts slower: the slits)
+const BLOB_STAGGER = 0.06;    // blobs in one letter wake up to this much apart
+
+// Growth curve: 0 -> 1 over `full` seconds, quick at first, gently landing
+// on exactly 1 (so the slits really close — no hairline seams left over).
+const grow = (tau, full) => tau >= full ? 1 : 1 - Math.pow(1 - tau / full, 2);
+
+/* ===================================================================== */
+/* 3. THE SCANLINE RAILS — the horizontal streaks around the word         */
+/* ===================================================================== */
+// Five horizontal features, measured off the video:
+//   two bright full-width rails (above and below the word) that sweep in
+//   from both screen edges and meet near the middle; two inner rails that
+//   grow OUTWARD from the middle; and a row of grey dashes on top.
+// Each rail is chopped into 16 px blocks. A block switches on at its own
+// time (the sweep, plus a little random lag so the edge looks ragged) and
+// off again when the rail crumbles away at the end.
+// "seeds" are short stray dashes that show up early (before the rail
+// reaches them) or linger late (after it crumbles): [from x, to x,
+// appear time (null = only after the crumble), gone time].
+const BLOCK = 16;
+const RAILS = [
+  { // top rail — sweeps in from both edges, closes the gap at x=665
+    y: 187, h: 10, x0: 0, x1: 1280, peak: 0.97,
+    build: { type: "close", meet: 665, edgeStart: 0.73, start: 0.78, done: 1.38, gap: 200 },
+    rampIn: { from: 0.22, t0: 0.75, t1: 1.95, ease: "out" },
+    rampOut: { to: 0.33, t0: 3.08, t1: 3.74 },
+    crumble: { at: 3.70, spread: 0.08 },
+    seedCap: 0.48,
+    seeds: [[90, 109, 0.45, 3.95], [149, 169, 0.65, 3.75], [230, 249, 0.65, 3.75],
+            [276, 297, 0.45, 4.15], [729, 749, 0.65, 3.95], [915, 935, 0.65, 4.05],
+            [1162, 1182, 0.45, 4.05], [1209, 1244, 0.65, 3.86]],
+  },
+  { // bottom rail — same idea, a little slower; gap closes at x=669
+    y: 533, h: 9, x0: 0, x1: 1280, peak: 1.0,
+    build: { type: "close", meet: 669, edgeStart: 0.73, start: 0.78, done: 1.75, gap: 345 },
+    rampIn: { from: 0.22, t0: 0.75, t1: 1.95, ease: "out" },
+    rampOut: { to: 0.38, t0: 3.15, t1: 3.78 },
+    crumble: { at: 3.74, spread: 0.12 },
+    seedCap: 0.42,
+    seeds: [[0, 9, 0.48, 3.95], [150, 168, 0.66, 3.86], [254, 275, 0.66, 3.86],
+            [1120, 1139, 0.58, 3.86], [1160, 1177, 0.66, 3.86], [1231, 1251, 0.66, 3.86],
+            [100, 117, null, 3.86], [398, 415, null, 3.86], [429, 447, null, 3.86],
+            [534, 551, null, 3.86], [670, 687, null, 3.86], [742, 760, null, 3.86],
+            [798, 815, null, 3.86], [849, 873, null, 3.96], [1005, 1024, null, 3.86]],
+  },
+  { // inner top rail — dimmer grey, grows outward from the middle
+    y: 227, h: 9, x0: 141, x1: 1175, peak: 0.76,
+    build: { type: "open", centre: 658, start: 1.76, speed: 0.17, ragged: 0.16 },
+    rampIn: { from: 0.42, t0: 1.68, t1: 2.6, ease: "smooth" },
+    rampOut: { to: 0.42, t0: 3.66, t1: 3.93 },
+    crumble: { at: 3.955, spread: 0.055 },
+    seedCap: 0.36,
+    seeds: [[333, 342, 1.10, 3.97], [462, 479, 1.40, 3.97], [686, 704, 1.12, 3.97],
+            [379, 397, null, 4.25], [944, 959, null, 4.25]],
+  },
+  { // inner bottom rail — bright, grows outward; a lone dot at x=580 is the
+    // very first thing on screen (0.3 s), and a short tick sits at the far left
+    y: 489, h: 8, x0: 28, x1: 1245, peak: 0.97,
+    build: { type: "open", centre: 636, start: 1.62, speed: 0.24, ragged: 0.12 },
+    rampIn: { from: 0.33, t0: 1.6, t1: 2.5, ease: "smooth" },
+    rampOut: { to: 0.33, t0: 3.68, t1: 4.05 },
+    crumble: { at: 4.06, spread: 0.1 },
+    seedCap: 0.42,
+    seeds: [[580, 589, 0.30, 0.78], [2, 15, 1.50, 3.98], [286, 293, 1.40, 4.25],
+            [579, 590, null, 4.35], [105, 139, null, 4.15], [402, 411, null, 4.15],
+            [753, 766, null, 4.15], [970, 987, null, 4.15], [1030, 1050, null, 4.15],
+            [1144, 1160, null, 4.15]],
+  },
+];
+
+// The grey dash row above the top rail (positions measured off the video).
+const DASH_Y = 146, DASH_H = 8;
+const DASHES = [[107, 130], [191, 200], [275, 297], [346, 383], [510, 528], [565, 571],
+                [592, 611], [712, 730], [815, 835], [898, 928], [1005, 1031],
+                [1097, 1106], [1134, 1153], [1229, 1248]];
+const DASH_RAMP = { from: 0.3, t0: 0.9, t1: 1.8, ease: "smooth", peak: 0.48 };
+const DASH_OUT = { to: 0.45, t0: 3.0, t1: 3.45 };
+// Plus a scatter of barely-there specks: in the dash row, and a second very
+// faint row under the bottom rail. Pure texture — you feel them more than
+// see them. [y, how many, brightness]
+const SPECK_ROWS = [[147, 14, 0.08], [577, 18, 0.022]];
+
+// Glow: the real wordmark has a soft halo — a tight bright rim plus a wide
+// faint haze. [blur radius in video pixels, strength 0..1]
+const GLOW_TIGHT = [2, 0.85];
+const GLOW_WIDE = [12, 0.30];
+
+/* ===================================================================== */
+/* 4. SMALL HELPERS                                                       */
+/* ===================================================================== */
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, k) => a + (b - a) * k;
+const smooth = p => { p = clamp(p, 0, 1); return p * p * (3 - 2 * p); };
+const easeOut = p => 1 - Math.pow(1 - clamp(p, 0, 1), 1.5);
+
+// A seeded random-number generator (mulberry32). Same seed = same "random"
+// numbers every time, so the glitch looks identical on every replay and a
+// ?t= screenshot is repeatable.
+function makeRandom(seed) {
+  return function () {
+    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+    let r = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    r = (r + Math.imul(r ^ (r >>> 7), 61 | r)) ^ r;
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rand = makeRandom(0x5741504F);   // "WAPO" in hex — any number works
+
+// Flicker: a repeatable 0..1 value per (video frame, thing) pair.
+function flick(frame, id) {
+  const s = Math.sin(frame * 12.9898 + id * 78.233) * 43758.5453;
+  return s - Math.floor(s);
+}
+
+// Brightness ramp in (0..1 of the rail's peak), and the dim-down at the end.
+function rampIn(r, t) {
+  if (t < r.t0) return 0;
+  const p = (t - r.t0) / (r.t1 - r.t0);
+  return lerp(r.from, 1, r.ease === "out" ? easeOut(p) : smooth(p));
+}
+function rampOut(r, t) {
+  return lerp(1, r.to, smooth((t - r.t0) / (r.t1 - r.t0)));
+}
+// How blotchy a rail is right now: 1 while it is still powering up, 0 once
+// it is steady, a little blotchy again as it dies. Blotchy = a few blocks
+// flare much brighter than the rest, like a tube warming up.
+function roughness(rail, t) {
+  const pin = clamp((t - rail.rampIn.t0) / (rail.rampIn.t1 - rail.rampIn.t0), 0, 1);
+  const pout = clamp((t - rail.rampOut.t0) / (rail.rampOut.t1 - rail.rampOut.t0), 0, 1);
+  return (1 - pin) + 0.35 * pout;
+}
+
+/* ===================================================================== */
+/* 5. PRE-COMPUTE — cut letters into blobs, rails into blocks             */
+/* ===================================================================== */
+function buildBlobs(map) {
+  const rows = map.length, cols = map[0].length, blobs = [];
+  for (let mid = 0; mid < rows; mid += BAND_ROWS) {      // mid row of each band
+    // Squash the band's 3 rows into one line: a column is "on" if any of
+    // the 3 rows has a block there.
+    const on = [];
+    for (let c = 0; c < cols; c++) {
+      let any = false;
+      for (let r = mid - 1; r <= mid + 1; r++)
+        if (r >= 0 && r < rows && map[r][c] === "#") any = true;
+      on.push(any);
+    }
+    // Each unbroken run of "on" columns is a stroke; wide ones get split.
+    for (let c = 0; c < cols; ) {
+      if (!on[c]) { c++; continue; }
+      let end = c;
+      while (end + 1 < cols && on[end + 1]) end++;
+      const n = end - c + 1, pieces = Math.max(1, Math.round(n / BLOB_MAX_COLS));
+      for (let k = 0; k < pieces; k++) {
+        const a = c + (n * k) / pieces, b = c + (n * (k + 1)) / pieces;
+        blobs.push({
+          cx: (a + b) / 2, cy: mid + 0.5,          // centre, in cells
+          hx: (b - a) / 2, hy: BAND_ROWS / 2,      // half-size when full grown
+          delay: rand() * BLOB_STAGGER,
+        });
+      }
+      c = end + 1;
+    }
+  }
+  return blobs;
+}
+const LETTERS = WORD.map(w => ({ ...w, map: GLYPHS[w.glyph], blobs: buildBlobs(GLYPHS[w.glyph]) }));
+
+for (const rail of RAILS) {
+  rail.blocks = [];
+  const b = rail.build;
+  for (let xa = rail.x0; xa < rail.x1; xa += BLOCK) {
+    const xb = Math.min(rail.x1, xa + BLOCK), d = Math.abs((xa + xb) / 2 - (b.meet ?? b.centre));
+    let tin;
+    if (b.type === "close") {
+      // Sweep in from both screen edges: a quick dash to `gap` px from the
+      // meeting point, then the gap closes more and more slowly.
+      const far = Math.max(b.meet - rail.x0, rail.x1 - b.meet);
+      if (d >= b.gap) tin = lerp(b.edgeStart, b.start, (far - d) / (far - b.gap));
+      else tin = lerp(b.start, b.done, 1 - Math.sqrt(d / b.gap));
+      if (rand() < 0.25) tin += rand() * 0.06;          // a few late blocks = gaps
+    } else {
+      // Grow outward from the centre, fast at first then easing off.
+      const half = Math.max(b.centre - rail.x0, rail.x1 - b.centre) * 1.03;
+      tin = b.start - b.speed * Math.log(1 - d / half);
+      if (rand() < 0.35) tin += rand() * b.ragged;       // ragged growing edge
+    }
+    rail.blocks.push({ xa, xb, tin,
+                       tout: rail.crumble.at + rand() * rail.crumble.spread,
+                       mottle: 0.86 + 0.14 * rand(),         // steady unevenness
+                       hot: Math.pow(rand(), 3) * 1.4 - 0.35 }); // warm-up flare
+                       // (averages to zero: a few blocks flare, the rest dim)
+  }
+}
+const DASH_LIST = DASHES.map(([xa, xb]) => {
+  const thin = rand() < 0.25;
+  return { xa, xb, bright: 0.55 + 0.45 * rand(),
+           y: DASH_Y + (thin ? (rand() < 0.5 ? 0 : 3) : Math.round(rand() * 2 - 1)),
+           h: thin ? 5 : DASH_H,
+           tin: 0.9 + rand() * 0.6, tout: 3.28 + rand() * 0.26 };
+});
+for (const [y, count, bright] of SPECK_ROWS)
+  for (let k = 0; k < count; k++) {
+    const xa = Math.round(rand() * 1240), len = 6 + Math.round(rand() * 22);
+    DASH_LIST.push({ xa, xb: xa + len, bright: bright / DASH_RAMP.peak * (0.6 + 0.8 * rand()),
+                     y: y + Math.round(rand() * 2), h: 5 + Math.round(rand() * 3),
+                     tin: 0.5 + rand() * 0.9, tout: 3.2 + rand() * 0.4 });
+  }
+
+/* ===================================================================== */
+/* 6. CANVASES & SIZING (crisp pixels, any screen density)                */
+/* ===================================================================== */
+// Four canvases:
+//   screen  — the one you see (fills the window)
+//   layer   — this frame's white "light": letters + rails + dashes
+//   glow    — a blurred copy of the layer, used as the halo
+//   mask    — the finished letter shapes, drawn once per resize; used to trim
+//             the swelling blobs to the exact letter outline
+const screen = document.getElementById("splash");
+const ctx = screen.getContext("2d");
+const layer = document.createElement("canvas"), L = layer.getContext("2d");
+const glow = document.createElement("canvas"), G = glow.getContext("2d");
+const mask = document.createElement("canvas"), M = mask.getContext("2d");
+
+let S = 1, ox = 0, oy = 0, sw = STAGE_W, sh = STAGE_H;   // set by resize()
+
+// Video pixel -> real screen pixel, rounded so every edge lands exactly on
+// a pixel boundary (that is what keeps the blocks razor sharp).
+const X = x => Math.round(x * S);
+const Y = y => Math.round(y * S);
+function block(g, x0, y0, x1, y1) {
+  const a = X(x0), b = Y(y0);
+  g.fillRect(a, b, Math.max(1, X(x1) - a), Math.max(1, Y(y1) - b));
+}
+
+function resize() {
+  // devicePixelRatio = real screen pixels per CSS pixel (2 on most phones
+  // and "retina" laptops). Sizing the canvas in real pixels avoids blur.
+  const dpr = window.devicePixelRatio || 1;
+  const cw = Math.max(1, Math.round(screen.clientWidth * dpr));
+  const ch = Math.max(1, Math.round(screen.clientHeight * dpr));
+  screen.width = cw; screen.height = ch;
+  S = Math.min(cw / STAGE_W, ch / STAGE_H);           // fit 16:9 inside
+  sw = Math.round(STAGE_W * S); sh = Math.round(STAGE_H * S);
+  ox = Math.floor((cw - sw) / 2); oy = Math.floor((ch - sh) / 2);
+  for (const c of [layer, glow, mask]) { c.width = sw; c.height = sh; }
+  for (const g of [ctx, L, G, M]) g.imageSmoothingEnabled = false;
+
+  M.clearRect(0, 0, sw, sh);
+  M.fillStyle = "#fff";
+  for (const lt of LETTERS)
+    lt.map.forEach((row, r) => {
+      for (let c = 0; c < row.length; c++)
+        if (row[c] === "#")
+          block(M, lt.x + c * CELL_W, TEXT_TOP + r * CELL_H,
+                   lt.x + (c + 1) * CELL_W, TEXT_TOP + (r + 1) * CELL_H);
+    });
+}
+
+/* ===================================================================== */
+/* 7. DRAWING ONE FRAME                                                   */
+/* ===================================================================== */
+function drawLetters(t) {
+  if (t >= SETTLED_T) { L.drawImage(mask, 0, 0); return; }   // clean mark
+  L.fillStyle = "#fff";
+  for (const lt of LETTERS) {
+    for (const bl of lt.blobs) {
+      const tau = t - lt.wake - bl.delay;      // seconds since this blob woke
+      if (tau <= 0) continue;
+      const gx = grow(tau * lt.speed, GROW_X), gy = grow(tau * lt.speed, GROW_Y);
+      // A brand-new blob is a faint speck; it is full white within ~0.1 s.
+      L.globalAlpha = clamp(0.3 + tau / 0.1, 0, 1);
+      const cx = lt.x + bl.cx * CELL_W, cy = TEXT_TOP + bl.cy * CELL_H;
+      const hx = Math.max(1.5, gx * bl.hx * CELL_W);
+      const hy = Math.max(1.2, gy * bl.hy * CELL_H);
+      block(L, cx - hx, cy - hy, cx + hx, cy + hy);
+    }
+  }
+  L.globalAlpha = 1;
+  // Trim: keep only the parts of the blobs that are inside the letters.
+  L.globalCompositeOperation = "destination-in";
+  L.drawImage(mask, 0, 0);
+  L.globalCompositeOperation = "source-over";
+}
+
+function drawRails(t, frame) {
+  L.fillStyle = "#fff";
+  RAILS.forEach((rail, i) => {
+    const level = rail.peak * rampIn(rail.rampIn, t) * rampOut(rail.rampOut, t);
+    const rough = roughness(rail, t);                      // 1 = blotchy, 0 = steady
+    const wobble = 0.97 + 0.06 * flick(frame, i);          // faint shimmer
+    const on = x => {                                       // is the rail lit at x?
+      const bk = rail.blocks[Math.floor((x - rail.x0) / BLOCK)];
+      return bk && t >= bk.tin && t < bk.tout;
+    };
+    for (const bk of rail.blocks) {
+      if (t < bk.tin || t >= bk.tout) continue;
+      L.globalAlpha = clamp(level * bk.mottle * wobble * (1 + bk.hot * rough), 0, 1);
+      block(L, bk.xa, rail.y, bk.xb, rail.y + rail.h);
+    }
+    // Stray seeds: shown only where the rail itself is dark right now.
+    rail.seeds.forEach(([xa, xb, tin, gone], j) => {
+      const early = tin !== null && t >= tin && t < gone;
+      const late = tin === null && t >= rail.crumble.at && t < gone;
+      if (!(early || late) || on((xa + xb) / 2)) return;
+      const base = t < rail.crumble.at ? rail.seedCap : level;
+      const a = base * clamp((t - (tin ?? rail.crumble.at)) / 0.25, 0.45, 1)
+                     * clamp((gone - t) / 0.3, 0.35, 1)
+                     * (0.8 + 0.4 * flick(frame, 10 + i * 31 + j));   // seeds flicker
+      L.globalAlpha = clamp(a, 0, 1);
+      block(L, xa, rail.y, xb + 1, rail.y + rail.h);
+    });
+  });
+  // The grey dash row.
+  const dl = DASH_RAMP.peak * rampIn(DASH_RAMP, t) * rampOut(DASH_OUT, t);
+  DASH_LIST.forEach((d, j) => {
+    if (t < d.tin || t >= d.tout) return;
+    L.globalAlpha = clamp(dl * d.bright * (0.9 + 0.2 * flick(frame, 200 + j)), 0, 1);
+    block(L, d.xa, d.y, d.xb + 1, d.y + d.h);
+  });
+  L.globalAlpha = 1;
+}
+
+function render(t) {
+  const frame = Math.floor(Math.max(0, t) * VIDEO_FPS + 1e-6);
+  t = frame / VIDEO_FPS;                  // step time like a 24 fps video
+
+  L.clearRect(0, 0, sw, sh);
+  drawLetters(t);
+  if (t < SETTLED_T) drawRails(t, frame);
+
+  // Halo: blur the layer's light (twice: tight + wide) using canvas shadows.
+  // The trick: draw the layer far off to the left with the shadow offset
+  // back onto the canvas, so ONLY the blurred shadow lands. Then cut the
+  // sharp shapes out of it so the halo sits around things, not on top.
+  const off = sw + 200;
+  G.clearRect(0, 0, sw, sh);
+  G.shadowOffsetX = off; G.shadowOffsetY = 0;
+  for (const [radius, strength] of [GLOW_WIDE, GLOW_TIGHT]) {
+    G.shadowBlur = 2 * radius * S;
+    G.shadowColor = `rgba(255,255,255,${strength})`;
+    G.drawImage(layer, -off, 0);
+  }
+  G.shadowColor = "rgba(0,0,0,0)"; G.shadowBlur = 0; G.shadowOffsetX = 0;
+  G.globalCompositeOperation = "destination-out";
+  G.drawImage(layer, 0, 0);
+  G.globalCompositeOperation = "source-over";
+
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, screen.width, screen.height);
+  ctx.drawImage(glow, ox, oy);
+  ctx.drawImage(layer, ox, oy);
+}
+
+/* ===================================================================== */
+/* 8. PLAYBACK — play once, hold, replay on tap / click / R               */
+/* ===================================================================== */
+const reducedMotion = window.matchMedia &&
+  window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+const frozen = (() => {                    // ?t=2.5 freezes the clock at 2.5 s
+  const v = parseFloat(new URLSearchParams(location.search).get("t"));
+  return Number.isFinite(v) ? Math.max(0, v) : null;
+})();
+
+let startMs = 0, running = false, lastFrame = -1, holdT = END_T;
+
+function tick() {
+  // Read the clock ourselves rather than trusting the timestamp handed to
+  // requestAnimationFrame (that one is the frame's start time and can sit a
+  // hair before startMs, or lag behind in some headless/background tabs).
+  const t = Math.max(0, (performance.now() - startMs) / 1000);
+  const f = Math.floor(t * VIDEO_FPS);
+  if (f !== lastFrame) { lastFrame = f; render(Math.min(t, END_T)); }
+  if (t < END_T) requestAnimationFrame(tick);
+  else running = false;                    // done: the clean mark stays up
+}
+
+function play() {
+  holdT = END_T;
+  if (reducedMotion) { render(holdT); return; }      // no motion: final mark only
+  startMs = performance.now(); lastFrame = -1;
+  if (!running) { running = true; requestAnimationFrame(tick); }
+}
+
+resize();
+if (frozen !== null) { holdT = frozen; render(holdT); }
+else play();
+
+window.addEventListener("resize", () => { resize(); if (!running) render(holdT); });
+screen.addEventListener("pointerdown", play);
+window.addEventListener("keydown", e => { if (e.key === "r" || e.key === "R") play(); });
+</script>
+</body>
+</html>

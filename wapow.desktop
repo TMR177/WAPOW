@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=WAPOW Demo
+Comment=Boot splash, then the live adaptive dash
+Exec=/home/track177/wapow_start.sh
+Icon=/home/track177/wapow_icon.png
+Terminal=false
+Categories=Utility;

@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+settings.json
+splash_frames/
+wapow_frame_*.png
+logs/
+*.log
